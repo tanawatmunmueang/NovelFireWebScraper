@@ -34,6 +34,7 @@ namespace NovelFireWebScraper
         private System.Windows.Forms.ProgressBar progressBarEven = null!;
         private CheckBox chkHeadlessToggle = null!;
         private CheckBox chkIncludeChapterName = null!;
+        private NumericUpDown numStartPage = null!;
         private Button btnPauseResume = null!;
         private Button btnCancel = null!;
 
@@ -60,7 +61,7 @@ namespace NovelFireWebScraper
         {
             this.Text = "NovelFire Scraper";
             this.Width = 800;
-            this.Height = 550;
+            this.Height = 580;
             CreateUI();
             LoadSettings();
             this.FormClosing += MainForm_FormClosing;
@@ -101,7 +102,12 @@ namespace NovelFireWebScraper
             chkIncludeChapterName = new CheckBox { Text = "Include Chapter Name in File", Left = chkHeadlessToggle.Right + 15, Top = chkHeadlessToggle.Top, Checked = _includeChapterNameInContent, AutoSize = true };
             chkIncludeChapterName.CheckedChanged += ChkIncludeChapterName_CheckedChanged;
 
-            btnStartScraping = new Button { Text = "Start Scraping", Left = 130, Top = chkHeadlessToggle.Bottom + 10, Width = 120 };
+            Label lblStartPage = new Label { Text = "Chapter Page Index:", Left = 130, Top = chkHeadlessToggle.Bottom + 10, AutoSize = true };
+
+            // This line adds x pixels of space between the label and the box for better visuals.
+            numStartPage = new NumericUpDown { Left = lblStartPage.Right + 20, Top = lblStartPage.Top - 3, Width = 80, Minimum = 1, Maximum = 9999, Value = 1 };
+
+            btnStartScraping = new Button { Text = "Start Scraping", Left = 130, Top = numStartPage.Bottom + 10, Width = 120 };
             btnStartScraping.Click += BtnStartScraping_Click;
 
             btnPauseResume = new Button { Text = "Pause", Left = btnStartScraping.Right + 10, Top = btnStartScraping.Top, Width = 70, Enabled = false };
@@ -122,7 +128,7 @@ namespace NovelFireWebScraper
             this.Resize += (s, e) => {
                 int totalBarWidth = this.ClientSize.Width - 40 - 10; progressBarOdd.Width = totalBarWidth / 2; progressBarEven.Left = progressBarOdd.Right + 10; progressBarEven.Width = totalBarWidth - progressBarOdd.Width;
             };
-            Controls.AddRange(new Control[] { lblLink, txtLink, lblLocalDir, txtLocalDir, chkHeadlessToggle, chkIncludeChapterName, btnStartScraping, btnPauseResume, btnCancel, btnRetryFailedChapters, txtLogs, progressBarOdd, progressBarEven, errorLogs, lblStatus });
+            Controls.AddRange(new Control[] { lblLink, txtLink, lblLocalDir, txtLocalDir, chkHeadlessToggle, chkIncludeChapterName, lblStartPage, numStartPage, btnStartScraping, btnPauseResume, btnCancel, btnRetryFailedChapters, txtLogs, progressBarOdd, progressBarEven, errorLogs, lblStatus });
         }
 
         private void ChkIncludeChapterName_CheckedChanged(object? sender, EventArgs e)
@@ -154,6 +160,7 @@ namespace NovelFireWebScraper
             txtLocalDir.Enabled = !isStarting;
             chkHeadlessToggle.Enabled = !isStarting;
             chkIncludeChapterName.Enabled = !isStarting;
+            numStartPage.Enabled = !isStarting;
             btnPauseResume.Enabled = isStarting;
             btnCancel.Enabled = isStarting;
             if (isStarting) { btnPauseResume.Text = "Pause"; _isPaused = false; _pauseEvent.Set(); _failedChapters.Clear(); progressBarOdd.Value = 0; progressBarEven.Value = 0; progressBarEven.Visible = true; txtLogs.Clear(); errorLogs.Clear(); }
@@ -172,7 +179,16 @@ namespace NovelFireWebScraper
             try { var opts = GetCurrentChromeOptions(); var svc = ChromeDriverService.CreateDefaultService(); svc.HideCommandPromptWindow = true; _chapterListDriver?.Quit(); token.ThrowIfCancellationRequested(); _chapterListDriver = new ChromeDriver(svc, opts); _chapterListDriver.Manage().Timeouts().PageLoad = TimeSpan.FromSeconds(60); }
             catch (OperationCanceledException) { AddLog("Chapter list fetching cancelled during driver init."); throw; }
             catch (Exception ex) { AddErrorLog($"ChromeDriver init failed for chapter list: {ex.Message}"); return chapters; }
-            int currentPage = 1; bool firstPage = true; AddLog("Fetching chapter list from NovelFire...");
+
+            int startPage = 1;
+            this.Invoke((Action)(() => {
+                startPage = (int)numStartPage.Value;
+            }));
+
+            int currentPage = startPage > 1 ? startPage : 1;
+            bool firstPage = true;
+            AddLog($"Fetching chapter list from NovelFire, starting at page {currentPage}...");
+
             while (_chapterListDriver != null && !token.IsCancellationRequested)
             {
                 _pauseEvent.Wait(token); token.ThrowIfCancellationRequested();
@@ -211,7 +227,9 @@ namespace NovelFireWebScraper
             try
             {
                 new DriverManager().SetUpDriver(new ChromeConfig(), VersionResolveStrategy.MatchingBrowser);
-                var chaps = GetChapterLinksFromNovelFire(baseUrl, token);
+
+                var chaps = await Task.Run(() => GetChapterLinksFromNovelFire(baseUrl, token), token);
+
                 if (token.IsCancellationRequested) { throw new OperationCanceledException(token); }
                 if (!chaps.Any()) { lblStatus.Text = "No items/rate limited."; AddLog("No chapters/rate limited."); UpdateScrapingUIState(false); return; }
                 lblStatus.Text = "Scraping with two drivers...";
@@ -301,47 +319,19 @@ namespace NovelFireWebScraper
         private string? ExtractBookTitle(HtmlAgilityPack.HtmlDocument doc) => doc.DocumentNode.SelectSingleNode("//a[@class='booktitle']")?.InnerText.Trim();
         private string? ExtractChapterTitle(HtmlAgilityPack.HtmlDocument doc) => doc.DocumentNode.SelectSingleNode("//span[@class='chapter-title']")?.InnerText.Trim();
 
-        // <<< CHANGE: This method is being replaced with the final, robust C# translation.
         private bool IsReadableLine(string line)
         {
             const int MIN_LENGTH_FOR_NARRATION = 3;
             char[] quoteChars = { '“', '‘', '"', '\'' };
-
-            // Check for letters and digits once for efficiency.
             bool hasLetters = line.Any(char.IsLetter);
             bool hasDigits = line.Any(char.IsDigit);
-
-            // Rule 1: Handle Dialogue First
             bool isDialogue = line.Length > 0 && quoteChars.Contains(line[0]);
-            if (isDialogue)
-            {
-                // A quoted line is kept only if it contains actual words or numbers.
-                // This correctly REMOVES "…" but KEEPS "Go!" and "10.".
-                return hasLetters || hasDigits;
-            }
-
-            // Path B: The line is NOT dialogue. Apply stricter rules.
-
-            // Rule 2: The Core "Junk Filter"
-            // A line is only junk if it has NO letters AND NO numbers.
-            // This REMOVES '……' and '---' but KEEPS '5…' and '00:00'.
-            if (!hasLetters && !hasDigits)
-            {
-                return false;
-            }
-
-            // Rule 3: Final Polish for lines that are NOT junk.
-            // This rule applies only to lines that contain letters to avoid removing countdowns.
-            if (hasLetters && line.Length < MIN_LENGTH_FOR_NARRATION)
-            {
-                return false;
-            }
-
-            // If a line has passed all checks, it's valid.
+            if (isDialogue) { return hasLetters || hasDigits; }
+            if (!hasLetters && !hasDigits) { return false; }
+            if (hasLetters && line.Length < MIN_LENGTH_FOR_NARRATION) { return false; }
             return true;
         }
 
-        // <<< CHANGE: This method is updated to use the new logic.
         private string? ExtractChapterContent(HtmlAgilityPack.HtmlDocument doc)
         {
             var contentNode = doc.DocumentNode.SelectSingleNode("//div[@id='content']");
@@ -350,14 +340,10 @@ namespace NovelFireWebScraper
                 this.AddErrorLog("HAP: #content div not found.");
                 return null;
             }
-
-            // Standard cleaning of unwanted HTML elements
             contentNode.Descendants("p").Where(p => p.Attributes["class"]?.Value.Contains("box-notification") ?? false).ToList().ForEach(p => p.Remove());
             contentNode.Descendants("nfe059").ToList().ForEach(n => n.Remove());
             contentNode.Descendants().Where(n => Regex.IsMatch(n.Name, @"^nf[0-9a-f]+$")).ToList().ForEach(n => n.Remove());
             contentNode.Descendants().Where(n => n.Name == "script" || n.Name == "style" || n.Name == "iframe" || (n.Attributes["class"]?.Value.ToLowerInvariant().Contains("ad") ?? false) || (n.Attributes["id"]?.Value.ToLowerInvariant().Contains("ad") ?? false) || (n.Attributes["class"]?.Value.ToLowerInvariant().Contains("banner") ?? false) || (n.Attributes["class"]?.Value.ToLowerInvariant().Contains("hidden") ?? false) || (n.GetAttributeValue("style", "").ToLowerInvariant().Contains("display:none")) || n.Name == "ins").ToList().ForEach(n => n.Remove());
-
-            // Initial text extraction and basic cleanup
             string content = contentNode.InnerHtml;
             content = Regex.Replace(content, "<br\\s*/?>", "\n", RegexOptions.IgnoreCase);
             content = Regex.Replace(content, "<p[^>]*>", "\n\n", RegexOptions.IgnoreCase);
@@ -367,19 +353,12 @@ namespace NovelFireWebScraper
             content = HtmlEntity.DeEntitize(content);
             content = Regex.Replace(content, @"[ \t]+", " ").Trim();
             content = Regex.Replace(content, @"(\r\n|\r|\n){2,}", "\n\n").Trim();
-
-            // Apply the new, robust line-by-line filtering logic
             var cleanedLines = content.Split(new[] { '\n' }, StringSplitOptions.None)
                                       .Select(line => line.Trim())
                                       .Where(IsReadableLine);
-
-            // Re-join with double newlines to recreate paragraph spacing.
             content = string.Join("\n\n", cleanedLines);
-
-            // Final cleanup of any specific characters you dislike.
             content = content.Replace("~", "");
             content = content.Replace("→", " ");
-
             return content;
         }
 
