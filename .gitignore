@@ -1,0 +1,35 @@
+# Ignore Visual Studio and Rider settings
+.vs/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Ignore build outputs
+bin/
+obj/
+*.dll
+*.exe
+*.cache
+*.pdb
+
+# Ignore project system files
+*.v7.bin
+*.v7b
+*.csproj.user
+*.db
+*.shm
+*.wal
+*.lock
+*.vsidx
+*.dbcache*
+
+# Ignore NuGet
+project.assets.json
+project.nuget.cache
+*.nuget.g.props
+*.nuget.dgspec.json
+
+# Optional: if you use JetBrains Rider
+.idea/
